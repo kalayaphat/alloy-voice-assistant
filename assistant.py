@@ -1,6 +1,6 @@
 import base64
 from threading import Lock, Thread
-
+import numpy as np
 import cv2
 import openai
 from cv2 import VideoCapture, imencode
@@ -13,41 +13,43 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 from pyaudio import PyAudio, paInt16
 from speech_recognition import Microphone, Recognizer, UnknownValueError
+import pyautogui  # To capture the screen
 
 load_dotenv()
 
-
-class WebcamStream:
+class DesktopStream:
     def __init__(self):
-        self.stream = VideoCapture(index=0)
-        _, self.frame = self.stream.read()
         self.running = False
         self.lock = Lock()
+        self.frame = None
 
     def start(self):
         if self.running:
             return self
 
         self.running = True
-
         self.thread = Thread(target=self.update, args=())
         self.thread.start()
         return self
 
     def update(self):
         while self.running:
-            _, frame = self.stream.read()
-
-            self.lock.acquire()
-            self.frame = frame
-            self.lock.release()
+            # Capture the screen using pyautogui
+            self.frame = pyautogui.screenshot()
 
     def read(self, encode=False):
         self.lock.acquire()
-        frame = self.frame.copy()
+        frame = self.frame
         self.lock.release()
 
+        if frame is None:
+            return None
+
+        # Convert the screenshot to a numpy array for OpenCV
+        frame = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+
         if encode:
+            # Encode the image to base64
             _, buffer = imencode(".jpeg", frame)
             return base64.b64encode(buffer)
 
@@ -59,7 +61,7 @@ class WebcamStream:
             self.thread.join()
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        self.stream.release()
+        pass  # No special cleanup is required
 
 
 class Assistant:
@@ -134,12 +136,9 @@ class Assistant:
         )
 
 
-webcam_stream = WebcamStream().start()
+desktop_stream = DesktopStream().start()
 
-# model = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest")
-
-# You can use OpenAI's GPT-4o model instead of Gemini Flash
-# by uncommenting the following line:
+# Use OpenAI's GPT-4o model
 model = ChatOpenAI(model="gpt-4o")
 
 assistant = Assistant(model)
@@ -147,8 +146,8 @@ assistant = Assistant(model)
 
 def audio_callback(recognizer, audio):
     try:
-        prompt = recognizer.recognize_whisper(audio, model="base", language="english")
-        assistant.answer(prompt, webcam_stream.read(encode=True))
+        prompt = recognizer.recognize_whisper(audio, model="base", language="thai")
+        assistant.answer(prompt, desktop_stream.read(encode=True))
 
     except UnknownValueError:
         print("There was an error processing the audio.")
@@ -162,10 +161,14 @@ with microphone as source:
 stop_listening = recognizer.listen_in_background(microphone, audio_callback)
 
 while True:
-    cv2.imshow("webcam", webcam_stream.read())
-    if cv2.waitKey(1) in [27, ord("q")]:
+    # Show the captured desktop stream in the window
+    frame = desktop_stream.read()
+    if frame is not None:
+        cv2.imshow("Desktop Stream", frame)
+
+    if cv2.waitKey(1) in [27, ord("q")]:  # ESC or 'q' to quit
         break
 
-webcam_stream.stop()
+desktop_stream.stop()
 cv2.destroyAllWindows()
 stop_listening(wait_for_stop=False)
